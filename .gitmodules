@@ -1,0 +1,3 @@
+[submodule "external_baselines/destseg_official"]
+	path = external_baselines/destseg_official
+	url = https://github.com/apple-aiml-research/ml-destseg.git
