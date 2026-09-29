@@ -2,7 +2,7 @@
 
 Official DeSTSeg pretrained inference and unified evaluation on MVTec AD.
 
-使用作者官方模型及 MVTec AD 15 类预训练权重，保存主分支 FP32 异常图和官方 Top-100 图像分数，并分别运行官方指标与项目统一复评。当前只支持 **MVTec AD**，不训练、不扩展 VisA/BTAD，不使用 DINOv3/MAD/LOCAL/GUIDED 检测或校准。
+使用作者官方模型，保存主分支 FP32 异常图和官方 Top-100 图像分数，并分别运行官方指标实现与项目统一复评。目前提供 **MVTec AD 15类官方预训练复评** 和 **BTAD三类正常样本训练适配**。尚未接入VisA，不使用 DINOv3/MAD/LOCAL/GUIDED 检测或校准。
 
 **仓库只保存代码、测试、依赖说明和文档。** 权重、数据集、预测、评价结果、实验报告、运行日志和本地环境均不入库。没有在本地下载权重；权重之后在 Kaggle/服务器端准备。
 
@@ -29,6 +29,13 @@ Official DeSTSeg pretrained inference and unified evaluation on MVTec AD.
 
 ## 运行入口
 
+BTAD训练入口见 [BTAD训练与复评说明](external_baselines/destseg_btad/README.md)：固定每类1000步学生＋4000步分割，正常训练图＋官方DTD/Perlin增强；先在双T4环境检查短训练显存。它是官方方法的BTAD适配，不是官方发布的BTAD权重或benchmark。MVTec入口保持独立。
+
+```bash
+python -m external_baselines.destseg_btad train --help
+python -m external_baselines.destseg_btad.prepare_dtd --help
+```
+
 参阅 [完整运行文档](external_baselines/destseg_mvtec_pretrained/README.md)，包含路径参数化和双 T4 按类别分进程的完整命令：
 
 1. 准备独立环境与官方权重，`check-weights --load` 核对全部 15 类并严格加载。
@@ -50,7 +57,9 @@ Official DeSTSeg pretrained inference and unified evaluation on MVTec AD.
 
 官方网络/预处理/指标源码未修改；公共数据与评价依赖按原模块路径保留，复用已有 PatchCore/GLASS 数据清单、全图映射、评价函数与类别汇总。这些文件中的其他方法定义不是本仓库运行入口，不需要 DINO 模型权重，也不执行其他方法训练。仓库不包含 PatchCore/GLASS 上游检测模型。
 
-本地标准库测试 **4 项通过**；5 项 tensor/图像/NPZ 数值测试因本地没有科学计算环境而跳过。真实权重严格加载、真实推理、官方评价回放对照及 CUDA 复评尚待运行环境验证，不能称为正式复现成功。详见 [验证说明](external_baselines/destseg_mvtec_pretrained/LOCAL_VALIDATION.md)。
+MVTec入口原本地标准库测试4项通过，5项数值测试因本地无科学计算环境而跳过。随后用户已在Kaggle独立Python3.10/torch2.0.0+cu118环境中运行全部9项测试通过，并完成真实权重严格加载、bottle路径对照及15类推理/两套评价；实验报告和结果不入库。缓存评价与未包装eval.py的完整交叉比对未独立执行。原本地记录见 [验证说明](external_baselines/destseg_mvtec_pretrained/LOCAL_VALIDATION.md)。
+
+BTAD新增2项标准库检查通过；2项mask/优化器数值测试在本地跳过，真实DeSTSeg训练显存、速度、收敛和最终指标均待Kaggle验证，不能以MVTec测试通过替代BTAD训练验证。
 
 ```bash
 python -m unittest discover -s external_baselines/destseg_mvtec_pretrained/tests -v

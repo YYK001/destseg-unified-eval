@@ -125,11 +125,11 @@ def infer(args, categories):
                 torch.cuda.empty_cache()
 
 
-def prediction_rows(root, category, allow_smoke=False):
+def prediction_rows(root, category, allow_smoke=False, *, protocol=PROTOCOL):
     path = root/category/'predict'
     state = read_json(path/'complete.json')
     identity = state['identity']
-    if (state['status'] != 'complete' or identity['protocol'] != PROTOCOL
+    if (state['status'] != 'complete' or identity['protocol'] != protocol
             or identity['category'] != category or identity['stage'] != 'predict'):
         raise ValueError('Incomplete/incompatible predictions')
     if state['smoke'] and not allow_smoke:
@@ -165,13 +165,13 @@ def prediction_rows(root, category, allow_smoke=False):
     return rows, state
 
 
-def unified(args, categories):
+def unified(args, categories, *, protocol=PROTOCOL):
     from external_baselines.patchcore_official_eval.evaluation import saved_inputs, calculate
     device = device_setup(args.device)
     for category in categories:
-        prediction_rows(args.output_dir, category)
+        prediction_rows(args.output_dir, category, protocol=protocol)
         dest = args.output_dir/category/'unified'/args.name
-        identity = dict(protocol=PROTOCOL, category=category, stage='unified', evaluation_name=args.name)
+        identity = dict(protocol=protocol, category=category, stage='unified', evaluation_name=args.name)
         with stage(dest, identity, device, args) as meter:
             with meter.measure('saved_inputs_and_unified_GT'):
                 rows, maps, masks, audits = saved_inputs(args.output_dir/category, args.dataset_root)
@@ -201,15 +201,15 @@ class Tee:
             file.flush()
 
 
-def official_eval(args, categories):
+def official_eval(args, categories, *, protocol=PROTOCOL):
     """Call ORIGINAL evaluate(), replacing only its IO with saved original maps/masks."""
     device = device_setup(args.device)
     verify_source(args.official_root)
     _, _, upstream = modules(args.official_root, evaluation=True)
     for category in categories:
-        rows, _ = prediction_rows(args.output_dir, category)
+        rows, _ = prediction_rows(args.output_dir, category, protocol=protocol)
         dest = args.output_dir/category/'official'/args.name
-        identity = dict(protocol=PROTOCOL, category=category, stage='official', evaluation_name=args.name,
+        identity = dict(protocol=protocol, category=category, stage='official', evaluation_name=args.name,
                         mode='original_eval.evaluate_on_cached_FP32_outputs_and_official_masks')
         cache = args.output_dir/category/'predict'
 
@@ -263,23 +263,23 @@ def official_eval(args, categories):
             torch.cuda.empty_cache()
 
 
-def summarize(args, categories):
+def summarize(args, categories, *, protocol=PROTOCOL, dataset_name='mvtec'):
     from external_baselines.patchcore_official_eval.evaluation import summarize as unified_summary
     from DINOv3.MADEqual.guided_validation.summary import mean_available
     dest = args.output_dir/'summaries'/args.name/args.kind
-    identity = dict(protocol=PROTOCOL, categories=categories, stage='summary', kind=args.kind)
+    identity = dict(protocol=protocol, categories=categories, stage='summary', kind=args.kind)
     start_stage(dest, identity)
     metrics, fixed, official_rows = [], [], []
     totals = [0, 0, 0]
     try:
         for category in categories:
-            rows, _ = prediction_rows(args.output_dir, category)
+            rows, _ = prediction_rows(args.output_dir, category, protocol=protocol)
             totals[0] += len(rows)
             totals[1] += sum(r['label'] == 0 for r in rows)
             totals[2] += sum(r['label'] == 1 for r in rows)
             path = args.output_dir/category/args.kind/args.name
             state = read_json(path/'complete.json')
-            if (state['status'] != 'complete' or state['identity']['protocol'] != PROTOCOL
+            if (state['status'] != 'complete' or state['identity']['protocol'] != protocol
                 or state['identity']['category'] != category or state['identity']['stage'] != args.kind
                 or state['identity']['evaluation_name'] != args.name):
                 raise ValueError(f'Incomplete/incompatible {category} {args.kind}')
@@ -289,11 +289,13 @@ def summarize(args, categories):
                 fixed.extend(dict(category=category, **r) for r in result['fixed_fpr'])
             else:
                 official_rows.extend(result['rows'])
-        from .protocol import CATEGORIES
-        if set(categories) == set(CATEGORIES) and totals != [1725, 467, 1258]:
-            raise ValueError(f'Full MVTec split totals differ: {totals}')
+        from external_baselines.patchcore_official_eval.protocol import CATEGORIES as DATASETS
+        all_categories = DATASETS[dataset_name]
+        expected = {'mvtec': [1725,467,1258], 'btad': [741,451,290]}[dataset_name]
+        if set(categories) == set(all_categories) and totals != expected:
+            raise ValueError(f'Full {dataset_name} split totals differ: {totals}')
         if args.kind == 'unified':
-            macro, fmacro = unified_summary(metrics, fixed, categories, 'mvtec')
+            macro, fmacro = unified_summary(metrics, fixed, categories, dataset_name)
             for filename, values in [('category_metrics', metrics), ('fixed_fpr', fixed),
                                      ('macro_metrics', macro), ('fixed_fpr_macro', fmacro)]:
                 csv_write(dest/(filename+'.csv'), values)
@@ -304,7 +306,7 @@ def summarize(args, categories):
                 if len(group) != len(categories) or {r['category'] for r in group} != set(categories):
                     raise ValueError('Incomplete/duplicate official category rows')
                 macro.append(dict(branch=branch, evaluation='official_category_unweighted_macro',
-                    scope='dataset_macro' if set(categories)==set(CATEGORIES) else 'selected_categories_NOT_full_dataset',
+                    scope='dataset_macro' if set(categories)==set(all_categories) else 'selected_categories_NOT_full_dataset',
                     category_count=len(group), **{k: mean_available([r[k] for r in group])[0]
                     for k in ('IAP','IAP90','AUPRO','AP','AUC','detect_AUC')}))
             csv_write(dest/'official_category_metrics.csv', official_rows)
