@@ -1,10 +1,21 @@
 import ast
 from pathlib import Path
 import unittest
+import tarfile
 from external_baselines.destseg_btad.protocol import protocol,schedule,select
 
 
 class LocalTests(unittest.TestCase):
+    def test_dtd_metadata_ignored_but_image_paths_checked(self):
+        from external_baselines.destseg_btad.prepare_dtd import image_members
+        names=['dtd/images/waffled/.directory','dtd/images/waffled/image.jpg',
+               'dtd/images/waffled/notes.txt','dtd/labels/train1.txt']
+        selected=image_members([tarfile.TarInfo(n) for n in names])
+        self.assertEqual([m.name for m in selected],['dtd/images/waffled/image.jpg'])
+        for name in ['dtd/images/../../escape.jpg','dtd/images/waffled/nested/image.jpg']:
+            with self.assertRaises(ValueError):
+                image_members([tarfile.TarInfo(name)])
+
     def test_frozen_schedule_and_protocol_separation(self):
         from external_baselines.destseg_mvtec_pretrained.protocol import PROTOCOL
         self.assertEqual(schedule(),(1000,4000))

@@ -9,6 +9,22 @@ import urllib.request
 URL='https://www.robots.ox.ac.uk/~vgg/data/dtd/download/dtd-r1.0.1.tar.gz'
 
 
+def image_members(members):
+    selected=[]
+    for member in members:
+        path=PurePosixPath(member.name)
+        if path.parts[:2]!=('dtd','images') or not member.isfile():
+            continue
+        # Official DTD includes desktop metadata such as waffled/.directory.
+        # Only JPEG images participate in the official training dataset.
+        if path.suffix!='.jpg':
+            continue
+        if path.is_absolute() or '..' in path.parts or len(path.parts)!=4:
+            raise ValueError(f'Unexpected DTD image path: {member.name}')
+        selected.append(member)
+    return selected
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory',type=Path,required=True)
@@ -41,14 +57,7 @@ def main():
             raise RuntimeError('Incomplete DTD archive')
         partial.replace(archive)
     with tarfile.open(archive,'r:gz') as data:
-        selected=[]
-        for member in data.getmembers():
-            path=PurePosixPath(member.name)
-            if path.parts[:2]!=('dtd','images') or not member.isfile():
-                continue
-            if path.is_absolute() or '..' in path.parts or len(path.parts)!=4 or path.suffix!='.jpg':
-                raise ValueError(f'Unexpected DTD path: {member.name}')
-            selected.append(member)
+        selected=image_members(data.getmembers())
         if len(selected)!=5640 or len({m.name for m in selected})!=5640:
             raise ValueError('Expected 5640 distinct DTD images')
         if shutil.disk_usage(root).free<sum(m.size for m in selected)+256*1024**2:
