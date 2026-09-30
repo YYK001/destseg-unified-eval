@@ -1,5 +1,6 @@
 """Official two-stage optimization on BTAD normals; no evaluation during training."""
 import csv
+import faulthandler
 import gc
 import importlib
 import os
@@ -74,6 +75,7 @@ def train(args,categories, *, backend=None):
         seed_everything(args.seed)
         loader=torch.utils.data.DataLoader(ds,batch_size=args.batch_size,shuffle=True,
             num_workers=args.workers,drop_last=True,worker_init_fn=seed_worker,
+            multiprocessing_context='spawn' if args.workers else None,
             generator=torch.Generator().manual_seed(args.seed))
         if len(loader)==0:
             raise ValueError('Empty drop_last loader')
@@ -82,7 +84,8 @@ def train(args,categories, *, backend=None):
         with shared.stage(dest,identity,device,args) as meter:
             json_write(dest/'run.json',dict(protocol=p,source=source,category=category,smoke=smoke,
                 dataset_root=str(root),dtd_root=str(args.dtd_root.resolve()),device=str(device),
-                workers=args.workers,actual_student_steps=n_student,actual_segmentation_steps=n_seg,
+                workers=args.workers,worker_start_method='spawn' if args.workers else 'single_process',
+                actual_student_steps=n_student,actual_segmentation_steps=n_seg,
                 evaluation_during_training=False,final_checkpoint_rule='fixed final step; never best test score'))
             json_write(dest/'train_manifest.json',[dict(relative_path=x.relative_to(root).as_posix(),
                 label=0,role='train_normal') for x in paths])
@@ -116,20 +119,33 @@ def train(args,categories, *, backend=None):
                                     seconds=(time.perf_counter()-begin)/(local_step+1)
                                     print(f'{category} {phase} step={step}/{n_student+n_seg} '
                                           f'loss={values["total_loss"]:.6f} mean_step={seconds:.3f}s',flush=True)
+                            print(f'{category} {phase}: compute finished; collecting resource statistics',flush=True)
+                            # Dump once if phase finalization blocks; parent watchdog remains independent.
+                            faulthandler.dump_traceback_later(120, repeat=False)
+                        print(f'{category} {phase}: resource statistics saved',flush=True)
+                        faulthandler.cancel_dump_traceback_later()
                         if phase=='student' and not smoke:
+                            print(f'{category}: saving student checkpoint',flush=True)
                             with meter.measure('student_checkpoint_save'):
                                 save_model(dest/'student_step1000.pckl',model)
                     filename='smoke_model.pckl' if smoke else f'DeSTSeg_{p["dataset"].upper()}_5000_{category}.pckl'
+                    print(f'{category}: saving final checkpoint {filename}',flush=True)
+                    faulthandler.dump_traceback_later(120, repeat=False)
                     with meter.measure('final_checkpoint_save'):
                         save_model(dest/filename,model)
                     json_write(dest/'checkpoint.json',dict(filename=filename,step=step,smoke=smoke,
                         protocol=p,selection='fixed_final_step',contains_optimizer_state=False))
                     finish_stage(dest,identity,step=step,smoke=smoke,training_normal_count=len(paths),
                                  dtd_count=len(textures),checkpoint=filename)
+                    print(f'{category}: final checkpoint and complete.json saved',flush=True)
             finally:
+                print(f'{category}: cleaning DataLoader workers and model resources',flush=True)
+                faulthandler.dump_traceback_later(120, repeat=False)
                 del model,student_optimizer,seg_optimizer,iterator,loader
                 gc.collect()
                 torch.cuda.empty_cache()
+                faulthandler.cancel_dump_traceback_later()
+                print(f'{category}: cleanup finished',flush=True)
         print(f'train {category} complete; smoke={smoke}',flush=True)
 
 

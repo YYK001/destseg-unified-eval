@@ -91,6 +91,16 @@ $PY -m external_baselines.destseg_visa summarize --output-dir "$OUT" --kind offi
 
 ## 本地验证与待验证项
 
+### 训练结束停滞后的运行保护更新
+
+2026-09-30 的首批后台日志显示 candle 已打印5000步但没有类别完成消息，GPU1另两类完成后整个流程仍未退出。由于未取到后台进程栈或权重目录，实际阻塞位置仍未确认，不把本更新声称为已经验证的根因修复。
+
+- DataLoader 显式使用 `spawn`，避免在CUDA与采样线程启动后fork；仍维持workers2、每轮重建worker，不启用persistent_workers，不改训练步数、优化器或损失。启动方式记录到run.json；实际耗时和随机增强序列不承诺与旧运行逐值一致，需重新做smoke。
+- 每张卡逐类别启动独立进程，显示PID、保存checkpoint、写完成状态、资源统计结束、worker清理和进程退出日志。阶段收尾超过120秒会打印一次Python栈。
+- 启动器每60秒输出等待状态；训练/推理连续900秒无子进程输出则判失败并停止进程组，取消另一卡当前任务。评价使用独立3600秒无输出上限，可通过 `--idle-timeout` / `--evaluation-idle-timeout` 显式修改；心跳不算训练进展。
+- 成功生成report.zip；捕获到失败仍生成partial_records.zip及pipeline_failure.json，不伪称评价完成。凡已有原子保存的最终权重，另生成recovery.zip（包含权重与记录），恢复前必须验证complete.json、协议和strict加载；不自动认定残缺阶段可恢复。
+- 这些保护只能处理启动器仍在运行时的异常。Kaggle强制终止、磁盘写满或用户取消可能阻止归档，不能保证平台发布输出。后台Notebook包装cell应在非零退出时打印失败并结束该cell，不再启动其他实验，也不要主动关闭整个Session。
+
 标准库测试覆盖完整划分计数、缺失样本拒绝、训练不依赖测试文件、类别选择/双卡分组、协议隔离及语法。运行时mask测试需在独立环境执行；复用 MVTec 的预处理/Top100/非方形坐标/保存回读/macro测试和BTAD的两阶段优化器测试。
 
 尚未执行 VisA 真实 smoke、正式训练或全量评测，尚无 VisA DeSTSeg 指标。所有训练资源和效果需由实际 Kaggle 运行确认。
