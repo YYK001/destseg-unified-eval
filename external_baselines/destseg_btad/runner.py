@@ -58,17 +58,19 @@ def save_model(path, model):
     os.replace(temporary,path)
 
 
-def train(args,categories):
+def train(args,categories, *, backend=None):
+    make_protocol = protocol if backend is None else backend.protocol
+    make_dataset = training_dataset if backend is None else backend.training_dataset
     device=shared.device_setup(args.device)
     source=verify_source(args.official_root)
     _,_,network=modules(args.official_root)
     losses=importlib.import_module('model.losses')
-    p=protocol(args.batch_size,args.seed)
+    p=make_protocol(args.batch_size,args.seed)
     smoke=args.smoke_steps>0
     n_student,n_seg=schedule(args.smoke_steps)
     for category in categories:
-        # Data validation reads only train/ok and DTD, no test paths or masks.
-        root,ds,paths,textures=training_dataset(args.dataset_root,args.dtd_root,category,args.official_root)
+        # Training opens only normal training images and DTD; no test images/masks.
+        root,ds,paths,textures=make_dataset(args.dataset_root,args.dtd_root,category,args.official_root)
         seed_everything(args.seed)
         loader=torch.utils.data.DataLoader(ds,batch_size=args.batch_size,shuffle=True,
             num_workers=args.workers,drop_last=True,worker_init_fn=seed_worker,
@@ -117,7 +119,7 @@ def train(args,categories):
                         if phase=='student' and not smoke:
                             with meter.measure('student_checkpoint_save'):
                                 save_model(dest/'student_step1000.pckl',model)
-                    filename='smoke_model.pckl' if smoke else f'DeSTSeg_BTAD_5000_{category}.pckl'
+                    filename='smoke_model.pckl' if smoke else f'DeSTSeg_{p["dataset"].upper()}_5000_{category}.pckl'
                     with meter.measure('final_checkpoint_save'):
                         save_model(dest/filename,model)
                     json_write(dest/'checkpoint.json',dict(filename=filename,step=step,smoke=smoke,
@@ -131,13 +133,13 @@ def train(args,categories):
         print(f'train {category} complete; smoke={smoke}',flush=True)
 
 
-def trained(root,category,allow_smoke=False):
+def trained(root,category,allow_smoke=False, *, protocol_factory=protocol):
     dest=root/category/'train'
     state=read_json(dest/'complete.json')
     p=state['identity']['protocol']
-    expected=protocol(p['training']['batch_size'],p['training']['seed'])
+    expected=protocol_factory(p['training']['batch_size'],p['training']['seed'])
     if state['status']!='complete' or state['identity']['category']!=category or p!=expected:
-        raise ValueError('Incomplete/incompatible BTAD training')
+        raise ValueError('Incomplete/incompatible dataset training')
     if state['smoke'] and not allow_smoke:
         raise ValueError('Smoke-trained checkpoint cannot be used for formal inference')
     if not state['smoke'] and state['step']!=5000:
@@ -148,13 +150,16 @@ def trained(root,category,allow_smoke=False):
     return path,p,state['smoke']
 
 
-def infer(args,categories):
+def infer(args,categories, *, backend=None):
+    listing = test_listing if backend is None else backend.test_listing
+    make_mask = official_mask if backend is None else backend.official_mask
+    make_protocol = protocol if backend is None else backend.protocol
     device=shared.device_setup(args.device)
     source=verify_source(args.official_root)
-    root,groups,counts=test_listing(args.dataset_root,categories)
+    root,groups,counts=listing(args.dataset_root,categories)
     ds=test_transforms(args.official_root)
     for category in categories:
-        weight,p,train_smoke=trained(args.training_dir,category,allow_smoke=args.limit>0)
+        weight,p,train_smoke=trained(args.training_dir,category,allow_smoke=args.limit>0,protocol_factory=make_protocol)
         smoke=bool(args.limit or train_smoke)
         dest=args.output_dir/category/'predict'
         identity=dict(protocol=p,category=category,stage='predict',smoke=smoke)
@@ -179,12 +184,12 @@ def infer(args,categories):
                         (main,score),(aux,auxscore)=outputs(model(load_rgb(r.path,ds)[None].to(device)))
                         row=metadata(r,root,'test')
                         row['prediction_file']=f'maps/{number:06d}.npz'
-                        mask=official_mask(r,ds)
+                        mask=make_mask(r,ds)
                         save_prediction(dest,row,main[0].cpu().numpy(),aux[0].cpu().numpy(),
                                         score[0].item(),auxscore[0].item(),mask)
                         rows.append(row)
                         if (number+1)%25==0 or number+1==len(indices):
-                            print(f'predict btad/{category}: {number+1}/{len(indices)}',flush=True)
+                            print(f'predict {p["dataset"]}/{category}: {number+1}/{len(indices)}',flush=True)
                 json_write(dest/'samples.json',rows)
                 csv_write(dest/'sample_scores.csv',rows)
                 csv_write(dest/'label_audit.csv',[dict(relative_path=r['relative_path'],unified_label=r['label'],
@@ -197,14 +202,15 @@ def infer(args,categories):
                 torch.cuda.empty_cache()
 
 
-def evaluate_or_summarize(args,categories):
+def evaluate_or_summarize(args,categories, *, backend=None):
+    make_protocol = protocol if backend is None else backend.protocol
     protocols=[read_json(args.output_dir/c/'predict/complete.json')['identity']['protocol'] for c in categories]
     p=protocols[0]
-    if p!=protocol(p['training']['batch_size'],p['training']['seed']) or any(v!=p for v in protocols):
+    if p!=make_protocol(p['training']['batch_size'],p['training']['seed']) or any(v!=p for v in protocols):
         raise ValueError('Cannot combine differing training protocols')
     if args.command=='unified':
         shared.unified(args,categories,protocol=p)
     elif args.command=='official':
         shared.official_eval(args,categories,protocol=p)
     else:
-        shared.summarize(args,categories,protocol=p,dataset_name='btad')
+        shared.summarize(args,categories,protocol=p,dataset_name=p['dataset'])

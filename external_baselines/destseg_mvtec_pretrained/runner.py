@@ -291,7 +291,7 @@ def summarize(args, categories, *, protocol=PROTOCOL, dataset_name='mvtec'):
                 official_rows.extend(result['rows'])
         from external_baselines.patchcore_official_eval.protocol import CATEGORIES as DATASETS
         all_categories = DATASETS[dataset_name]
-        expected = {'mvtec': [1725,467,1258], 'btad': [741,451,290]}[dataset_name]
+        expected = {'mvtec': [1725,467,1258], 'btad': [741,451,290], 'visa': [2162,962,1200]}[dataset_name]
         if set(categories) == set(all_categories) and totals != expected:
             raise ValueError(f'Full {dataset_name} split totals differ: {totals}')
         if args.kind == 'unified':

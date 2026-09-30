@@ -66,3 +66,7 @@ python -m unittest discover -s external_baselines/destseg_mvtec_pretrained/tests
 ```
 
 有完整运行环境后必须确认 5 项 runtime 测试实际执行，没有 skipped。
+
+## VisA 正常样本训练与复评
+
+新增 [DeSTSeg VisA 接入说明](external_baselines/destseg_visa/README.md)：原版1cls.csv、12类独立训练、双T4推理与两套评价、自动打包文本记录。本地代码验证已完成，真实VisA运行尚待Kaggle验证。
