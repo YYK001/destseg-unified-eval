@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from external_baselines.destseg_mvtec_pretrained import runner as shared
 from external_baselines.destseg_mvtec_pretrained.official import modules, verify_source, load_model
 from external_baselines.destseg_mvtec_pretrained.adapter import load_rgb, outputs, save_prediction
+from external_baselines.destseg_mvtec_pretrained.resources import AllocatorResources
 from external_baselines.patchcore_official_eval.storage import json_write, read_json, csv_write, finish_stage
 from .data import training_dataset, seed_everything, seed_worker, test_listing, test_transforms, official_mask, metadata
 from .protocol import protocol, schedule
@@ -81,10 +82,12 @@ def train(args,categories, *, backend=None):
             raise ValueError('Empty drop_last loader')
         dest=args.output_dir/category/'train'
         identity=dict(protocol=p,category=category,stage='train',smoke=smoke)
-        with shared.stage(dest,identity,device,args) as meter:
+        with shared.stage(dest,identity,device,args,resource_class=AllocatorResources) as meter:
             json_write(dest/'run.json',dict(protocol=p,source=source,category=category,smoke=smoke,
                 dataset_root=str(root),dtd_root=str(args.dtd_root.resolve()),device=str(device),
                 workers=args.workers,worker_start_method='spawn' if args.workers else 'single_process',
+                resource_mode='allocator_only_no_sampler_no_extra_cuda_sync',
+                training_stage_timings_include_checkpoint_save=True,
                 actual_student_steps=n_student,actual_segmentation_steps=n_seg,
                 evaluation_during_training=False,final_checkpoint_rule='fixed final step; never best test score'))
             json_write(dest/'train_manifest.json',[dict(relative_path=x.relative_to(root).as_posix(),
@@ -119,25 +122,22 @@ def train(args,categories, *, backend=None):
                                     seconds=(time.perf_counter()-begin)/(local_step+1)
                                     print(f'{category} {phase} step={step}/{n_student+n_seg} '
                                           f'loss={values["total_loss"]:.6f} mean_step={seconds:.3f}s',flush=True)
-                            print(f'{category} {phase}: compute finished; collecting resource statistics',flush=True)
-                            # Dump once if phase finalization blocks; parent watchdog remains independent.
+                            # Save the model before leaving the resource measurement context.
+                            print(f'{category} {phase}: compute finished; saving checkpoint before statistics',flush=True)
                             faulthandler.dump_traceback_later(120, repeat=False)
-                        print(f'{category} {phase}: resource statistics saved',flush=True)
-                        faulthandler.cancel_dump_traceback_later()
-                        if phase=='student' and not smoke:
-                            print(f'{category}: saving student checkpoint',flush=True)
-                            with meter.measure('student_checkpoint_save'):
+                            if phase=='student' and not smoke:
                                 save_model(dest/'student_step1000.pckl',model)
-                    filename='smoke_model.pckl' if smoke else f'DeSTSeg_{p["dataset"].upper()}_5000_{category}.pckl'
-                    print(f'{category}: saving final checkpoint {filename}',flush=True)
-                    faulthandler.dump_traceback_later(120, repeat=False)
-                    with meter.measure('final_checkpoint_save'):
-                        save_model(dest/filename,model)
-                    json_write(dest/'checkpoint.json',dict(filename=filename,step=step,smoke=smoke,
-                        protocol=p,selection='fixed_final_step',contains_optimizer_state=False))
-                    finish_stage(dest,identity,step=step,smoke=smoke,training_normal_count=len(paths),
-                                 dtd_count=len(textures),checkpoint=filename)
-                    print(f'{category}: final checkpoint and complete.json saved',flush=True)
+                                print(f'{category}: student checkpoint saved',flush=True)
+                            if phase=='segmentation':
+                                filename='smoke_model.pckl' if smoke else f'DeSTSeg_{p["dataset"].upper()}_5000_{category}.pckl'
+                                save_model(dest/filename,model)
+                                json_write(dest/'checkpoint.json',dict(filename=filename,step=step,smoke=smoke,
+                                    protocol=p,selection='fixed_final_step',contains_optimizer_state=False))
+                                finish_stage(dest,identity,step=step,smoke=smoke,training_normal_count=len(paths),
+                                             dtd_count=len(textures),checkpoint=filename)
+                                print(f'{category}: final checkpoint and complete.json saved',flush=True)
+                        faulthandler.cancel_dump_traceback_later()
+                        print(f'{category} {phase}: resource statistics finished',flush=True)
             finally:
                 print(f'{category}: cleaning DataLoader workers and model resources',flush=True)
                 faulthandler.dump_traceback_later(120, repeat=False)

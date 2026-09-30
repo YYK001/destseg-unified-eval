@@ -28,7 +28,7 @@ def stop_process(process):
     process.wait(timeout=10)
 
 
-def run_process(command, log_path, tag, cancel, *, idle_timeout=900, heartbeat=60):
+def run_process(command, log_path, tag, cancel, *, idle_timeout=900, heartbeat=60, deadline=None):
     """Stop on missing child output, cancellation or a failed child exit."""
     log_path = Path(log_path)
     messages = queue.Queue()
@@ -65,6 +65,8 @@ def run_process(command, log_path, tag, cancel, *, idle_timeout=900, heartbeat=6
                 except queue.Empty:
                     pass
                 now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    raise TimeoutError(f'{tag}: session work deadline reached; stopping for archive')
                 code = process.poll()
                 if code is not None:
                     if exited_at is None:

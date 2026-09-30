@@ -55,7 +55,7 @@ $PY -u -m "$MOD" infer --dataset-root "$VISA_ROOT" --training-dir "$SMOKE" \
 
 ## 双 T4 完整流程：训练 → 推理 → 两套评价 → 打包
 
-默认每卡6类，类别独立进程、每类加载后释放模型；无DDP。推理batch1。类别列表按交错方式分到两卡。日志实时打印，并保存到 OUT_logs。
+默认每卡6类，类别独立进程、每类加载后释放模型；无DDP。每类训练后立即推理（batch1）和两套评价，然后才启动下一类；类别列表交错分到两卡。日志实时打印，并保存到 OUT_logs。
 
 ```bash
 cd /kaggle/working/destseg-unified-eval
@@ -90,6 +90,23 @@ $PY -m external_baselines.destseg_visa summarize --output-dir "$OUT" --kind offi
 ```
 
 ## 本地验证与待验证项
+
+### 新的从头运行入口：面向12小时会话
+
+```bash
+cd /kaggle/working/destseg-unified-eval
+/kaggle/working/destseg-venv/bin/python -u -m external_baselines.destseg_visa.fresh_run \
+  --dataset-root /kaggle/input/datasets/tensura3607/amazon-visa-anomaly \
+  --dtd-root /kaggle/working/destseg_assets/dtd/images --max-hours 10.75
+```
+
+保留Notebook的环境安装和DTD/VisA准备单元，移除旧的正式训练调用，使用上述唯一正式入口。自动先运行本地/运行时测试，再做candle、cashew各20+20步短训练检查两类退出路径，通过才用新目录从头训练。不会加载之前任何DeSTSeg类别权重；teacher仍使用官方ImageNet初始化。
+
+Kaggle文档规定Save & Run从头到尾须在12小时内完成，含安装准备。本入口默认10.75小时（从入口启动计算），留出环境准备和平台保存余量；如果环境准备已花超过1小时，请进一步降低预算。pipeline在预算末尾另留5分钟归档。12类全部排入队列，但不是保证12类都能在该窗口完成。每卡在启动下一类前用初始2.75小时、已观测同卡整类耗时乘1.15的较大值判断是否有时间，时间不足就记录pending并结束。运行中的进程也有硬工作截止时间，故极端情况下某类会被中断，该类不标完成。
+
+只有完成训练、推理、两套评价的类别进入最终汇总。`pipeline_status.json`明确记录requested/categories、completed、pending和complete/partial_budget/failed。部分结果不冒充12类macro。发生失败时入口会打印RUN FAILED并写launch_failure.json，随后正常结束Notebook以利平台发布文件；**进程退出码0不是实验成功证明**，以状态文件和类别完成记录为准。环境崩溃或平台强杀仍无法保证输出发布。
+
+2026-09-30资源统计修复：VisA各阶段与DeSTSeg训练改用`AllocatorResources`，不启动nvidia-smi采样线程、不创建采样子进程、不额外调用CUDA synchronize。保留各进程各设备PyTorch allocated/reserved峰值；整卡显存观测明确标为disabled，不把其缺失填为0。训练阶段计时现在包含该阶段checkpoint保存，属于host wall time，不与旧版独立保存计时直接比较。最终模型和complete.json写入位于统计context退出之前；统计写入报错仅告警，不阻止已完成模型保存。仍可能存在训练、磁盘或驱动故障，启动器监控负责停止和记录，未在本地无GPU环境宣称真实长跑通过。
 
 ### 训练结束停滞后的运行保护更新
 

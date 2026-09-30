@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -42,6 +43,32 @@ class ProcessTests(unittest.TestCase):
                 run_process([sys.executable,'-u','-c','import time; time.sleep(30)'],
                             Path(d)/'child.log','test',event)
 
+    def test_wall_deadline_stops_even_with_output(self):
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(TimeoutError,'deadline'):
+                run_process([sys.executable,'-u','-c',
+                    "import time\nwhile True:\n print('working',flush=True)\n time.sleep(.05)"],
+                    Path(d)/'child.log','test',threading.Event(),idle_timeout=10,
+                    deadline=time.monotonic()+.5)
+
+    def test_budget_does_not_start_unfinishable_category(self):
+        import json
+        from external_baselines.destseg_visa.pipeline import main, can_start_category
+        self.assertFalse(can_start_category(10,20,15))
+        self.assertTrue(can_start_category(10,None,15))
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            root=Path(d); out=root/'eval'
+            argv=['pipeline','--phase','all','--dataset-root',d,'--dtd-root',d,
+                  '--training-dir',str(root/'train'),'--output-dir',str(out),
+                  '--categories','candle','--max-hours','.1']
+            with patch.object(sys,'argv',argv), patch('external_baselines.destseg_visa.pipeline.run_process') as run:
+                main()
+                run.assert_not_called()
+            state=json.loads((root/'eval_logs/pipeline_status.json').read_text())
+            self.assertEqual(state['status'],'partial_budget')
+            self.assertEqual(state['completed'],[])
+            self.assertEqual(state['pending'],['candle'])
+
     def test_failure_archives_records_and_existing_final_weight(self):
         from external_baselines.destseg_visa.pipeline import main
         with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
@@ -56,7 +83,7 @@ class ProcessTests(unittest.TestCase):
                 with self.assertRaises(TimeoutError): main()
             with ZipFile(str(out)+'_partial_records.zip') as z:
                 self.assertIn('eval_logs/pipeline_failure.json',z.namelist())
-                self.assertNotIn('complete',z.read('eval_logs/pipeline_status.json').decode())
+                self.assertEqual(json.loads(z.read('eval_logs/pipeline_status.json'))['status'],'failed')
             with ZipFile(str(out)+'_recovery.zip') as z:
                 self.assertIn('train/candle/train/DeSTSeg_VISA_5000_candle.pckl',z.namelist())
 

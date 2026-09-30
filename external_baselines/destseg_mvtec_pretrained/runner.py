@@ -40,12 +40,18 @@ def env(device):
 
 
 @contextlib.contextmanager
-def stage(path, identity, device, args):
+def stage(path, identity, device, args, *, resource_class=None):
     start_stage(path, identity)
     try:
         json_write(path/'arguments.json', {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()})
         json_write(path/'environment.json', env(device))
-        meter = Resources(path, [str(device)], identity.get('category'))
+        if resource_class is None:
+            if identity.get('protocol', {}).get('dataset') == 'visa':
+                from .resources import AllocatorResources
+                resource_class = AllocatorResources
+            else:
+                resource_class = Resources
+        meter = resource_class(path, [str(device)], identity.get('category'))
         yield meter
     except Exception as exc:
         json_write(path/'failure.json', dict(status='failed', type=type(exc).__name__, message=str(exc)))
